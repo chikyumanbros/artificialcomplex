@@ -10,9 +10,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // 最小限のシミュレーションパラメータ
     const initialEntityCount = 3;  // 1から3に増加
     const maxEntities = 4000;
-    const baseEnergyDecay = 0.00005;  // さらに減少
-    const DIVISION_ENERGY_THRESHOLD = 0.5;  // 0.6から0.5に減少
-    const DIVISION_PROBABILITY = 0.2;      // 0.1から0.2に増加
+    const baseEnergyDecay = 0.0001;  // エネルギー消費率を調整
+    const DIVISION_ENERGY_THRESHOLD = 0.7;  // 分裂閾値を上げる
+    const DIVISION_PROBABILITY = 0.15;      // 分裂確率を調整
     const DIVISION_COOLDOWN = 30;          // 50から30に減少
     
     // 時間変数
@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let simulationSpeed = 1.0;
     
     // グローバル変数としてシステム全体のエネルギー総量を定義
-    const TOTAL_SYSTEM_ENERGY = 100;
+    const TOTAL_SYSTEM_ENERGY = 100;  // 100から1000に増加
     
     // Entityクラス - 抽象的な「実体」として再定義
     class Entity {
@@ -53,8 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
             this.energy = 0.7;  // 固定値に変更
             this.age = 0;
             this.isActive = true;
-            this.totalEnergyConsumed = 0;  // 累積エネルギー消費量を追加
-            this.maxEnergyCapacity = 1.0 + Math.random() * 0.5;  // 個体ごとの最大エネルギー容量
             
             // 内部状態の保存（記憶）
             this.memory = {
@@ -66,6 +64,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 stability: 0.7,  // 0.8から0.7に下げる
                 oscillation: 0.3 // 0.2から0.3に上げる
             };
+
+            // エネルギー還元キューを追加
+            this.energyReturnQueue = [];
         }
         
         // 基本的な更新処理
@@ -92,12 +93,61 @@ document.addEventListener('DOMContentLoaded', () => {
             this.position.x += this.velocity.x * subjectiveTimeScale;
             this.position.y += this.velocity.y * subjectiveTimeScale;
             
+            // エンティティ同士の衝突判定と反発
+            for (const other of entities) {
+                if (other !== this && other.isActive) {
+                    // 同じマスにいるかチェック
+                    const dx = Math.floor(other.position.x) - Math.floor(this.position.x);
+                    const dy = Math.floor(other.position.y) - Math.floor(this.position.y);
+                    
+                    if (dx === 0 && dy === 0) {
+                        // 反発力を計算（より自然な反発のため、実際の位置の差を使用）
+                        const exactDx = other.position.x - this.position.x;
+                        const exactDy = other.position.y - this.position.y;
+                        const distance = Math.sqrt(exactDx * exactDx + exactDy * exactDy) || 0.1;
+                        
+                        // 反発の強さ（エネルギーレベルに応じて変化）
+                        const repulsionStrength = 0.1 * (this.energy + other.energy);
+                        
+                        // 反発方向の単位ベクトル
+                        const nx = exactDx / distance;
+                        const ny = exactDy / distance;
+                        
+                        // 反発による速度変化
+                        this.velocity.x -= nx * repulsionStrength;
+                        this.velocity.y -= ny * repulsionStrength;
+                        other.velocity.x += nx * repulsionStrength;
+                        other.velocity.y += ny * repulsionStrength;
+                        
+                        // 衝突処理
+                        this.handleCollision(other, environment);
+                    }
+                }
+            }
+            
             // 境界処理
             this.enforceBoundaries();
             
-            // 活性状態の更新（新しい寿命システム）
-            const lifetimeEnergyLimit = this.maxEnergyCapacity * 100; // 生涯エネルギー消費の限界
-            if (this.energy <= 0 || this.totalEnergyConsumed >= lifetimeEnergyLimit) {
+            // 活性状態の更新
+            if (this.energy <= 0 || this.age > 500) {
+                // 死亡時に残りのエネルギーを環境に徐々に還元
+                if (this.isActive) {
+                    const remainingEnergy = Math.max(0, this.energy);
+                    // エネルギーを複数のステップに分けて還元
+                    const numSteps = 10;
+                    const energyPerStep = remainingEnergy / numSteps;
+                    
+                    // 周囲のセルにエネルギーを分散して還元
+                    for (let i = 0; i < numSteps; i++) {
+                        const angle = (Math.PI * 2 * i) / numSteps;
+                        const radius = i * 0.5; // 徐々に広がる半径
+                        const returnPos = {
+                            x: this.position.x + Math.cos(angle) * radius,
+                            y: this.position.y + Math.sin(angle) * radius
+                        };
+                        environment.returnEnergyAt(returnPos, energyPerStep * 0.1); // エネルギー還元量を10%に抑制
+                    }
+                }
                 this.isActive = false;
             }
             
@@ -111,24 +161,74 @@ document.addEventListener('DOMContentLoaded', () => {
         // エネルギー処理
         processEnergy(environment, subjectiveTimeScale = 1.0) {
             // 基本的なエネルギー消費
-            const baseCost = baseEnergyDecay * subjectiveTimeScale;
-            this.energy -= baseCost;
-            this.totalEnergyConsumed += baseCost;  // 累積エネルギー消費を記録
+            const consumedEnergy = baseEnergyDecay * subjectiveTimeScale;
+            this.energy -= consumedEnergy;
             
-            // 消費したエネルギーを環境に戻す（熱として）
-            environment.returnEnergyAt(this.position, baseCost);
+            // 消費エネルギーを還元キューに追加
+            this.queueEnergyReturn(this.position, consumedEnergy, 5);
             
-            // 環境からのエネルギー獲得量をさらに増加
-            const gainedEnergy = environment.getEnergyAt(this.position, time, 0.15 * subjectiveTimeScale);
+            // 環境からのエネルギー獲得（時間スケールから独立）
+            const baseGainRate = 0.01;  // 基本獲得率
+            const gainedEnergy = environment.getEnergyAt(this.position, time, baseGainRate);
             this.energy += gainedEnergy;
             
-            // エネルギー上限を個体ごとの最大容量に制限
-            this.energy = Math.min(this.energy, this.maxEnergyCapacity);
+            // エネルギー上限を設定
+            this.energy = Math.min(this.energy, 1.0);
+
+            // キューに溜まったエネルギーの段階的還元
+            this.processEnergyReturnQueue(environment);
         }
         
-        // ブラウン運動による揺らぎ
+        // エネルギー還元をキューに追加
+        queueEnergyReturn(position, amount, steps) {
+            const energyPerStep = amount / steps;
+            for (let i = 0; i < steps; i++) {
+                this.energyReturnQueue.push({
+                    position: {...position},
+                    amount: energyPerStep
+                });
+            }
+        }
+
+        // キューに溜まったエネルギーの処理
+        processEnergyReturnQueue(environment) {
+            if (this.energyReturnQueue.length > 0) {
+                const energyReturn = this.energyReturnQueue.shift();
+                environment.returnEnergyAt(energyReturn.position, energyReturn.amount);
+            }
+        }
+
+        // 衝突時のエネルギー還元を更新
+        handleCollision(other, environment) {
+            // エネルギー消費（衝突によるエネルギーロス）
+            const energyLoss = 0.001 * Math.min(this.energy, other.energy);
+            this.energy -= energyLoss;
+            other.energy -= energyLoss;
+            
+            // 衝突による内部振動の増加（より強い影響）
+            const collisionImpact = Math.sqrt(
+                this.velocity.x * this.velocity.x + 
+                this.velocity.y * this.velocity.y
+            ) * 0.8; // 0.5から0.8に増加
+            
+            // 内部状態の更新
+            this.internalState.oscillation += collisionImpact;
+            other.internalState.oscillation += collisionImpact * 0.7; // 相手にも振動が伝播
+            this.internalState.stability -= collisionImpact * 0.2;
+            other.internalState.stability -= collisionImpact * 0.15; // 相手の安定性も低下
+            
+            // 失われたエネルギーを段階的に還元
+            const totalLoss = energyLoss * 2;
+            this.queueEnergyReturn(this.position, totalLoss, 8);
+        }
+        
+        // ブラウン運動による揺らぎを更新
         addBrownianMotion() {
-            const brownianStrength = 0.01 * (1 - this.energy * 0.5);
+            // 内部振動が強いほどブラウン運動も強くなる
+            const baseStrength = 0.01 * (1 - this.energy * 0.5);
+            const oscillationFactor = 1.0 + this.internalState.oscillation;
+            const brownianStrength = baseStrength * oscillationFactor;
+            
             return {
                 x: (Math.random() - 0.5) * brownianStrength,
                 y: (Math.random() - 0.5) * brownianStrength
@@ -157,47 +257,51 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // 分裂を試みるメソッドを更新
         tryDivision(entities) {
-            // エネルギーによる構造の不安定化（不安定化をさらに加速）
+            // エネルギーによる構造の不安定化
             const energyStress = this.energy / DIVISION_ENERGY_THRESHOLD;
-            this.internalState.stability -= 0.015 * energyStress;  // 0.01から0.015に増加
+            this.internalState.stability -= 0.015 * energyStress;
 
-            // ブラウン運動による内部振動の蓄積（蓄積をさらに加速）
+            // ブラウン運動による内部振動の蓄積を復活
             const brownianImpact = Math.sqrt(
                 this.velocity.x * this.velocity.x + 
                 this.velocity.y * this.velocity.y
             );
-            this.internalState.oscillation += brownianImpact * 0.15;  // 0.1から0.15に増加
+            this.internalState.oscillation += brownianImpact * 0.15;
 
-            // 振動が臨界点を超えた場合、確率的に分裂（臨界点をさらに下げる）
-            const criticalOscillation = 0.5;  // 0.6から0.5に減少
+            // 振動が臨界点を超えた場合、確率的に分裂
+            const criticalOscillation = 0.5;
             if (this.internalState.oscillation > criticalOscillation && 
                 this.energy >= DIVISION_ENERGY_THRESHOLD) {
                 
-                // 分裂の試行（不安定性に比例した確率をさらに増加）
-                const divisionChance = (1.0 - this.internalState.stability) * 0.4;  // 0.3から0.4に増加
+                // 分裂の試行（不安定性と振動に比例した確率）
+                const divisionChance = 
+                    (1.0 - this.internalState.stability) * 0.4 + 
+                    (this.internalState.oscillation - criticalOscillation) * 0.3;
                 
                 if (Math.random() < divisionChance && entities.length < maxEntities) {
                     // 分裂実行
                     this.divide(entities);
                     
-                    // 分裂後の状態リセット（さらに不安定な状態を維持）
-                    this.internalState.stability = 0.8;  // 0.9から0.8に変更
-                    this.internalState.oscillation = 0.2;  // 0.1から0.2に変更
+                    // 分裂後の状態リセット（振動の一部は残す）
+                    this.internalState.stability = 0.8;
+                    this.internalState.oscillation *= 0.3; // 振動の30%を保持
                 }
             }
 
-            // 安定性の自然回復（さらに遅く）
+            // 安定性の自然回復（振動が強いほど回復が遅い）
+            const stabilityRecovery = 0.000005 / (1 + this.internalState.oscillation);
             this.internalState.stability = Math.min(1.0, 
-                this.internalState.stability + 0.000005);  // 0.00001から0.000005に減少
+                this.internalState.stability + stabilityRecovery);
             
-            // 振動の自然減衰（さらに遅く）
-            this.internalState.oscillation *= 0.999;  // 0.998から0.999に変更
+            // 振動の自然減衰（エネルギーが高いほど減衰が遅い）
+            const oscillationDecay = 0.999 - (this.energy * 0.001);
+            this.internalState.oscillation *= oscillationDecay;
         }
 
         // 分裂処理を独立したメソッドとして実装
         divide(entities) {
             // エネルギー分配（より均等に）
-            const splitRatio = 0.5 + (Math.random() - 0.5) * 0.05; // 0.1から0.05に減少
+            const splitRatio = 0.6;  // 固定の分割比率に変更
             const parentEnergy = this.energy * splitRatio;
             const childEnergy = this.energy * (1 - splitRatio);
             
@@ -205,10 +309,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 新しいエンティティの作成（より近い位置に）
             const offspring = new Entity(
-                this.position.x + (Math.random() - 0.5) * 1,  // 2から1に減少
-                this.position.y + (Math.random() - 0.5) * 1   // 2から1に減少
+                this.position.x + (Math.random() - 0.5) * 1,
+                this.position.y + (Math.random() - 0.5) * 1
             );
+            
+            // 基本的な属性の初期化
             offspring.energy = childEnergy;
+            offspring.age = 0;
+            
+            // 速度を新しく初期化（ランダムな方向）
+            offspring.velocity = {
+                x: (Math.random() - 0.5) * 0.5,
+                y: (Math.random() - 0.5) * 0.5
+            };
+            
+            // 内部状態を新しく初期化
+            offspring.internalState = {
+                stability: 0.7,
+                oscillation: 0.3
+            };
+            
+            // メモリを新しく初期化
+            offspring.memory = {
+                lastPosition: {...offspring.position}
+            };
+            
+            // エネルギー還元キューを新しく初期化
+            offspring.energyReturnQueue = [];
             
             entities.push(offspring);
         }
@@ -882,9 +1009,6 @@ document.addEventListener('DOMContentLoaded', () => {
             <h4>Entity #${entity.id}</h4>
             <table style="width:100%; border-collapse:collapse;">
                 <tr><td>Energy:</td><td>${entity.energy.toFixed(3)}</td></tr>
-                <tr><td>Max Energy Capacity:</td><td>${entity.maxEnergyCapacity.toFixed(3)}</td></tr>
-                <tr><td>Total Energy Consumed:</td><td>${entity.totalEnergyConsumed.toFixed(3)}</td></tr>
-                <tr><td>Lifetime Remaining:</td><td>${((entity.maxEnergyCapacity * 100 - entity.totalEnergyConsumed) / entity.maxEnergyCapacity).toFixed(1)}%</td></tr>
                 <tr><td>Age:</td><td>${entity.age.toFixed(0)}</td></tr>
                 <tr><td>Position:</td><td>(${entity.position.x.toFixed(1)}, ${entity.position.y.toFixed(1)})</td></tr>
                 <tr><td>Velocity:</td><td>(${entity.velocity.x.toFixed(2)}, ${entity.velocity.y.toFixed(2)})</td></tr>
