@@ -13,7 +13,7 @@
         }
         
         body {
-            background-color: #050e0c; /* 深い青紫色の背景 */
+            background-color: #1a1917; /* 深い青紫色の背景 */
             display: flex;
             justify-content: center;
             align-items: center;
@@ -30,7 +30,6 @@
             letter-spacing: 0; /* 文字間隔を調整 */
             font-family: 'WebPlus_IBM_CGA', 'Noto Sans Mono', 'DejaVu Sans Mono', 'Consolas', monospace;
             color: #4da6ff; /* 基本の青色 */
-            mix-blend-mode: screen; /* ブレンドモードで光の効果を強調 */
         }
         
         /* キャンバスコンテナ */
@@ -40,39 +39,6 @@
             overflow: hidden;
         }
 
-        /* 水中効果のオーバーレイ */
-        .underwater-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            pointer-events: none;
-            z-index: 1;
-            background: linear-gradient(
-                180deg,
-                rgba(10, 30, 60, 0.1) 0%,
-                rgba(0, 10, 30, 0.3) 100%
-            );
-            backdrop-filter: blur(1.5px);
-            opacity: 0.8;
-        }
-
-        /* 上部の光の効果 */
-        .light-rays {
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 100%;
-            background: radial-gradient(
-                circle at 50% 0%,
-                rgba(255, 255, 255, 0.1) 0%,
-                transparent 60%
-            );
-            pointer-events: none;
-            z-index: 2;
-        }
     </style>
 </head>
 <body>
