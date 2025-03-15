@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ASCII Void Model</title>
+    <title>Membrane Simulation</title>
     <style>
         @font-face {
             font-family: 'WebPlus_IBM_CGA';
@@ -13,13 +13,15 @@
         }
         
         body {
-            background-color: #1a1917; /* 深い青紫色の背景 */
+            background-color: #2c3e50; /* 落ち着いた濃紺色の背景 */
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
             overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            color: #ecf0f1;
         }
         
         #canvas {
@@ -29,7 +31,11 @@
             text-align: center;
             letter-spacing: 0; /* 文字間隔を調整 */
             font-family: 'WebPlus_IBM_CGA', 'Noto Sans Mono', 'DejaVu Sans Mono', 'Consolas', monospace;
-            color: #4da6ff; /* 基本の青色 */
+            color: #ecf0f1; /* 明るい灰色 */
+            background-color: #34495e; /* 暗めの青灰色の背景 */
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
         }
         
         /* キャンバスコンテナ */
@@ -37,15 +43,50 @@
             position: relative;
             z-index: 0;
             overflow: hidden;
+            border-radius: 12px;
+            background: linear-gradient(to bottom right, #2c3e50, #34495e);
+            padding: 10px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
         }
 
+        /* コントロールパネルのスタイルを落ち着いた色に */
+        #control-panel, #stats-panel {
+            background-color: rgba(52, 73, 94, 0.9) !important;
+            color: #ecf0f1 !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3) !important;
+        }
+
+        button {
+            background-color: #3498db !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 4px !important;
+            padding: 5px 10px !important;
+            cursor: pointer !important;
+            transition: background-color 0.3s !important;
+        }
+
+        button:hover {
+            background-color: #2980b9 !important;
+        }
+
+        input[type="range"] {
+            accent-color: #3498db !important;
+        }
+
+        h3, h4, h5 {
+            color: #3498db !important;
+        }
+
+        table {
+            color: #ecf0f1 !important;
+        }
     </style>
 </head>
 <body>
     <div class="canvas-container">
         <div id="canvas"></div>
-        <div class="underwater-overlay"></div>
-        <div class="light-rays"></div>
     </div>
     <script src="script.js"></script>
 </body>
