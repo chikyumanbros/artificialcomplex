@@ -2,16 +2,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('canvas');
     // 幅と高さの比率を1:1に近づける（正方形のグリッドになるように）
     const width = 180;
-    const height = 100;
+    const height = 90;
     
     // ASCII文字のセット - 単純に密度を表現
     const asciiChars = '☻▓▒░+*·';
     
     // 最小限のシミュレーションパラメータ
-    const initialEntityCount = 3;  // 1から3に増加
+    const initialEntityCount = 1;  // 3から10に増加
     const maxEntities = 4000;
     const baseEnergyDecay = 0.0001;  // エネルギー消費率を調整
-    const DIVISION_ENERGY_THRESHOLD = 0.7;  // 分裂閾値を上げる
+    const DIVISION_ENERGY_THRESHOLD = 0.5;  // 分裂閾値を上げる
     const DIVISION_PROBABILITY = 0.15;      // 分裂確率を調整
     const DIVISION_COOLDOWN = 30;          // 50から30に減少
     
@@ -75,7 +75,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 recentCollisions: 0,  // 最近の衝突回数
                 recentEnergyGains: [], // 最近のエネルギー獲得履歴
                 adaptivePatterns: [],  // 適応的な行動パターンの記憶
-                sharedMemories: []     // 他のエンティティから共有された記憶
+                sharedMemories: [],     // 他のエンティティから共有された記憶
+                memoryCapacity: 30,    // 記憶容量の上限
+                patternImportance: {},  // パターンの重要度スコアを保存
+                abstractPatterns: [],    // 抽象化されたパターン
+                actionValues: {}       // 行動価値の記録（強化学習用）
+            };
+            
+            // 強化学習パラメータ
+            this.learningParams = {
+                learningRate: 0.1,     // 学習率
+                discountFactor: 0.9,   // 割引率
+                explorationRate: 0.2,   // 探索率
+                lastAdjustment: 0,     // 最後の調整時間
+                performanceHistory: [] // 学習性能の履歴
+            };
+            
+            // 最後に実行した行動の記録
+            this.lastAction = null;
+            
+            // 内部動機付けシステム
+            this.motivations = {
+                energySeeking: 0.5,     // エネルギー探索の動機
+                selfPreservation: 0.5,  // 自己保存の動機
+                exploration: 0.5,       // 探索の動機
+                reproduction: 0.3,      // 繁殖の動機
+                socialInteraction: 0.4  // 社会的相互作用の動機
+            };
+            
+            // 行動優先度
+            this.behaviorPriorities = {
+                energyGathering: 0.5,   // エネルギー収集
+                avoidance: 0.3,         // 危険回避
+                exploration: 0.4,       // 探索
+                merging: 0.2,           // 結合
+                division: 0.1           // 分裂
             };
 
             // 内部状態に揺らぎを追加（初期安定性をさらに下げる）
@@ -124,6 +158,93 @@ document.addEventListener('DOMContentLoaded', () => {
                 energyTransferRate: 0.05,  // エネルギー移動率
                 mergeTimer: 0              // 結合してからの時間
             };
+
+            // 距離に基づく減衰モデルを使用したセンサー
+            this.sensors = {
+                // 環境センサー
+                detect(environment, entities) {
+                    const samples = [];
+                    const centerX = this.position.x;
+                    const centerY = this.position.y;
+                    
+                    // 全方向をサンプリング（8方向は例として）
+                    const directions = 8;
+                    for (let i = 0; i < directions; i++) {
+                        const angle = (i / directions) * Math.PI * 2;
+                        const dirX = Math.cos(angle);
+                        const dirY = Math.sin(angle);
+                        
+                        // 各方向のサンプル結果
+                        const directionSample = {
+                            angle: angle,
+                            direction: { x: dirX, y: dirY },
+                            energyGradient: 0,
+                            entities: [],
+                            vibrations: 0
+                        };
+                        
+                        // 環境からのエネルギー勾配を検出
+                        // 自分の位置と少し離れた位置でのエネルギー差を測定
+                        const nearDistance = 10; // 近距離サンプル
+                        const nearX = centerX + dirX * nearDistance;
+                        const nearY = centerY + dirY * nearDistance;
+                        
+                        // 範囲内に収める
+                        const boundedNearX = Math.max(0, Math.min(width, nearX));
+                        const boundedNearY = Math.max(0, Math.min(height, nearY));
+                        
+                        // 近距離と自分の位置のエネルギー差を計算
+                        const selfEnergy = environment.getEnergyAt({x: centerX, y: centerY});
+                        const nearEnergy = environment.getEnergyAt({x: boundedNearX, y: boundedNearY});
+                        
+                        // 勾配を計算（正なら増加、負なら減少）
+                        directionSample.energyGradient = nearEnergy - selfEnergy;
+                        
+                        // この方向にあるエンティティを検出
+                        entities.forEach(entity => {
+                            if (entity.id === this.id) return; // 自分自身は除外
+                            
+                            // エンティティとの相対位置
+                            const dx = entity.position.x - centerX;
+                            const dy = entity.position.y - centerY;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            
+                            // エンティティの方向
+                            const entityAngle = Math.atan2(dy, dx);
+                            
+                            // 方向の差を計算（-πからπの範囲）
+                            let angleDiff = entityAngle - angle;
+                            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+                            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+                            
+                            // 方向の差が小さいエンティティのみ考慮（視野角）
+                            const viewAngle = Math.PI / 4; // 45度
+                            if (Math.abs(angleDiff) <= viewAngle) {
+                                // 距離に基づく影響の減衰
+                                const influence = 1 / (1 + distance * distance * 0.001);
+                                
+                                directionSample.entities.push({
+                                    id: entity.id,
+                                    distance: distance,
+                                    angle: entityAngle,
+                                    angleDiff: angleDiff,
+                                    influence: influence,
+                                    energy: entity.energy,
+                                    oscillation: entity.internalState.oscillation
+                                });
+                                
+                                // 振動の影響を累積（距離の二乗に反比例）
+                                directionSample.vibrations += 
+                                    entity.internalState.oscillation * influence;
+                            }
+                        });
+                        
+                        samples.push(directionSample);
+                    }
+                    
+                    return samples;
+                }
+            };
         }
         
         // 基本的な更新処理
@@ -157,6 +278,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // エネルギー処理
             this.processEnergy(environment, subjectiveTimeScale);
             
+            // 前回の行動に対する報酬を計算して学習
+            if (this.lastAction) {
+                this.learnFromExperience(this.lastAction);
+            }
+            
             // 振動パターンの記録
             this.recordVibrationPattern();
             
@@ -168,6 +294,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // エネルギー勾配に応じた移動
             this.respondToEnergyGradient(environment);
+            
+            // 内部動機付けの更新
+            this.updateMotivations();
             
             // 活性状態の更新（年齢制限を廃止し、組織完全性に基づく判定に変更）
             if (this.energy <= 0 || this.tissueIntegrity <= 0.05) {  // 0.1から0.05に下げる
@@ -211,8 +340,22 @@ document.addEventListener('DOMContentLoaded', () => {
             // 記憶の統合と適用（一定間隔で実行）
             if (frameCount % 20 === 0) {
                 this.integrateAndApplyMemories();
+                
+                // 記憶の圧縮と重要度ベースの保持を実行
+                this.compressMemories();
             }
             
+            // パターン抽象化（低頻度で実行）
+            if (frameCount % 100 === 0 && this.memory.adaptivePatterns.length >= 5) {
+                this.abstractPatterns();
+            }
+            
+            // メタ学習と自己改善（低頻度で実行）
+            if (frameCount % 200 === 0) {
+                this.evaluateLearningEfficiency();
+            }
+            
+            // 新しい適応パターンの生成（低確率で実行）
             // 新しい適応パターンの生成（低確率で実行）
             if (Math.random() < 0.01) {
                 this.generateAdaptivePattern();
@@ -431,22 +574,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 2. 振動パターンの共鳴の条件を緩和
                 // 3. エネルギー条件も緩和
                 const mergeConditionsMet = 
-                    this.membraneProperties.permeability > 0.4 && 
-                    other.membraneProperties.permeability > 0.4 &&
-                    resonanceLevel > 0.6 &&
-                    this.energy > 0.3 && 
-                    other.energy > 0.3;
+                    this.membraneProperties.permeability > 0.3 && // 0.4から0.3に緩和
+                    other.membraneProperties.permeability > 0.3 && // 0.4から0.3に緩和
+                    resonanceLevel > 0.5 && // 0.6から0.5に緩和
+                    this.energy > 0.25 && // 0.3から0.25に緩和
+                    other.energy > 0.25; // 0.3から0.25に緩和
                 
-                // すでに結合状態のエンティティとも結合可能に（最大5つまで）
-                const canMergeThis = !this.mergeState.isMerged || this.mergeState.mergedWith.length < 5;
-                const canMergeOther = !other.mergeState.isMerged || other.mergeState.mergedWith.length < 5;
+                // グループサイズの制限を削除（無制限に結合可能に）
+                const canMergeThis = true;
+                const canMergeOther = true;
                 
                 // 同じグループに属していない場合のみ結合を許可
                 const notAlreadyMerged = !this.mergeState.mergedWith.includes(other.id) && 
                                         !other.mergeState.mergedWith.includes(this.id);
                 
-                // 結合確率を上げる（50%の確率で結合を試みる）
-                if (mergeConditionsMet && canMergeThis && canMergeOther && notAlreadyMerged && Math.random() < 0.5) {
+                // 条件を満たせば必ず結合する（確率条件を削除）
+                if (mergeConditionsMet && canMergeThis && canMergeOther && notAlreadyMerged) {
                     this.mergeWith(other);
                 }
             }
@@ -1728,21 +1871,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 collisions: this.memory.recentCollisions
             };
             
-            // 現在の状況に応じたパターン選択戦略
+            // 現在の動機付けに基づいたパターン選択戦略
             let patternSelectionStrategy;
             
-            if (this.energy < 0.3) {
-                // エネルギーが低い場合：エネルギー獲得を優先
-                patternSelectionStrategy = 'energy_gain';
-            } else if (this.memory.recentCollisions > 3) {
-                // 衝突が多い場合：防御を優先
-                patternSelectionStrategy = 'defense';
-            } else if (this.energy > 0.8) {
-                // エネルギーが高い場合：探索を優先
-                patternSelectionStrategy = 'exploration';
-            } else {
-                // 通常状態：バランスを優先
-                patternSelectionStrategy = 'balanced';
+            // 最も高い動機付けに基づいて戦略を決定
+            const highestMotivation = Object.entries(this.motivations)
+                .sort((a, b) => b[1] - a[1])[0];
+                
+            switch (highestMotivation[0]) {
+                case 'energySeeking':
+                    patternSelectionStrategy = 'energy_gain';
+                    break;
+                case 'selfPreservation':
+                    patternSelectionStrategy = 'defense';
+                    break;
+                case 'exploration':
+                    patternSelectionStrategy = 'exploration';
+                    break;
+                case 'reproduction':
+                case 'socialInteraction':
+                    patternSelectionStrategy = this.energy > 0.7 ? 'social' : 'balanced';
+                    break;
+                default:
+                    patternSelectionStrategy = 'balanced';
             }
             
             // 戦略に基づいてパターンを評価
@@ -1771,6 +1922,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         break;
                         
+                    case 'social':
+                        // 社会的相互作用に関連するパターンを優先
+                        if (pattern.type === 'vibration' || pattern.type === 'membrane' && pattern.parameters.elasticity > 0.6) {
+                            strategicValue += 0.3;
+                        }
+                        break;
+                        
                     case 'balanced':
                         // バランスの取れたパターンを優先
                         strategicValue += 0.1; // すべてのパターンに小さなボーナス
@@ -1789,77 +1947,78 @@ document.addEventListener('DOMContentLoaded', () => {
             // 関連性でソートして最適なパターンを選択
             evaluatedPatterns.sort((a, b) => b.relevance - a.relevance);
             
+            // 抽象パターンも評価（abstractPatternsが存在する場合のみ）
+            const evaluatedAbstractPatterns = (this.memory.abstractPatterns || []).map(pattern => {
+                const baseRelevance = this.evaluatePatternRelevance(pattern, currentConditions);
+                let strategicValue = 0;
+                
+                // 戦略に基づく評価（通常パターンと同様）
+                switch (patternSelectionStrategy) {
+                    case 'energy_gain':
+                        if (pattern.type === 'membrane' && pattern.parameters.permeability > 0.6) {
+                            strategicValue += 0.3;
+                        }
+                        break;
+                    case 'defense':
+                        if (pattern.type === 'membrane' && pattern.parameters.thickness > 0.6) {
+                            strategicValue += 0.3;
+                        }
+                        break;
+                    case 'exploration':
+                        if (pattern.type === 'movement') {
+                            strategicValue += 0.3;
+                        }
+                        break;
+                    case 'social':
+                        if (pattern.type === 'vibration' || pattern.type === 'membrane' && pattern.parameters.elasticity > 0.6) {
+                            strategicValue += 0.3;
+                        }
+                        break;
+                    case 'balanced':
+                        strategicValue += 0.1;
+                        break;
+                }
+                
+                // 抽象パターンにはボーナスを与える（より一般化されているため）
+                const abstractBonus = 0.1;
+                
+                // 総合評価
+                const totalRelevance = baseRelevance * 0.6 + strategicValue + pattern.successRate * 0.2 + abstractBonus;
+                
+                return { pattern, relevance: totalRelevance };
+            });
+            
+            // 通常パターンと抽象パターンを結合して再ソート
+            const allPatterns = [...evaluatedPatterns, ...evaluatedAbstractPatterns];
+            allPatterns.sort((a, b) => b.relevance - a.relevance);
+            
             // 関連性が十分高いパターンを適用
-            if (evaluatedPatterns.length > 0 && evaluatedPatterns[0].relevance > 0.6) {
-                const bestPattern = evaluatedPatterns[0].pattern;
-                this.applyPattern(bestPattern);
+            if (allPatterns.length > 0 && allPatterns[0].relevance > 0.6) {
+                // 探索率に基づいてランダムに行動するか決定
+                const shouldExplore = Math.random() < this.learningParams.explorationRate;
+                
+                let selectedPattern;
+                
+                if (shouldExplore) {
+                    // ランダムに選択（ただし関連性が一定以上のもののみから）
+                    const explorationCandidates = allPatterns.filter(p => p.relevance > 0.4);
+                    if (explorationCandidates.length > 0) {
+                        const randomIndex = Math.floor(Math.random() * explorationCandidates.length);
+                        selectedPattern = explorationCandidates[randomIndex].pattern;
+                    } else {
+                        selectedPattern = allPatterns[0].pattern; // 候補がなければ最適なものを選択
+                    }
+                } else {
+                    // 最適なパターンを選択
+                    selectedPattern = allPatterns[0].pattern;
+                }
+                
+                // 選択されたパターンを適用
+                this.applyPattern(selectedPattern);
                 
                 // パターンの使用を記録
-                bestPattern.lastUsed = time;
-                bestPattern.usageCount = (bestPattern.usageCount || 0) + 1;
-                
-                // 成功率の更新（エネルギー変化に基づく）
-                const initialEnergy = this.energy;
-                const initialState = {
-                    energy: this.energy,
-                    oscillation: this.internalState.oscillation,
-                    position: {...this.position}
-                };
-                
-                // 30フレーム後に成功率を評価するためのコールバックを設定
-                setTimeout(() => {
-                    // 複数の成功指標を評価
-                    const energyChange = this.energy - initialEnergy;
-                    const positionChange = Math.sqrt(
-                        Math.pow(this.position.x - initialState.position.x, 2) +
-                        Math.pow(this.position.y - initialState.position.y, 2)
-                    );
-                    
-                    // パターンタイプに応じた成功評価
-                    let success = false;
-                    
-                    switch (bestPattern.type) {
-                        case 'vibration':
-                            // 振動パターンはエネルギー変化で評価
-                            success = energyChange > 0;
-                            break;
-                            
-                        case 'membrane':
-                            // 膜パターンはエネルギー保持で評価
-                            success = this.energy >= initialEnergy * 0.95;
-                            break;
-                            
-                        case 'movement':
-                            // 移動パターンは位置変化で評価
-                            success = positionChange > 0.5;
-                            break;
-                    }
-                    
-                    // 成功率の更新（加重平均）
-                    bestPattern.successRate = bestPattern.successRate * 0.9 + (success ? 0.1 : 0);
-                    
-                    // 成功した場合、パターンの強度を増加
-                    if (success) {
-                        bestPattern.strength = Math.min(1.0, bestPattern.strength * 1.05);
-                    } else {
-                        // 失敗した場合、わずかに強度を減少
-                        bestPattern.strength = Math.max(0.1, bestPattern.strength * 0.98);
-                    }
-                    
-                    // 成功/失敗履歴を記録
-                    bestPattern.outcomeHistory = bestPattern.outcomeHistory || [];
-                    bestPattern.outcomeHistory.push({
-                        time: time,
-                        success: success,
-                        energyChange: energyChange,
-                        conditions: { ...currentConditions }
-                    });
-                    
-                    // 履歴サイズを制限
-                    if (bestPattern.outcomeHistory.length > 10) {
-                        bestPattern.outcomeHistory.shift();
-                    }
-                }, 30);
+                selectedPattern.lastUsed = time;
+                selectedPattern.usageCount = (selectedPattern.usageCount || 0) + 1;
             }
         }
         
@@ -1868,22 +2027,41 @@ document.addEventListener('DOMContentLoaded', () => {
             // パターンの適用条件と現在の状況の一致度を評価
             let relevanceScore = 0.5; // 基本スコア
             
-            // 条件の類似性を評価
-            const energySimilarity = 1 - Math.abs(
-                currentConditions.energy - pattern.conditions.energy
-            );
-            relevanceScore += energySimilarity * 0.3;
-            
-            const oscillationSimilarity = 1 - Math.abs(
-                currentConditions.oscillation - pattern.conditions.oscillation
-            );
-            relevanceScore += oscillationSimilarity * 0.2;
+            // pattern.conditionsが存在する場合のみ条件の類似性を評価
+            if (pattern.conditions) {
+                // エネルギーの類似性
+                if (typeof pattern.conditions.energy === 'number') {
+                    const energySimilarity = 1 - Math.abs(
+                        currentConditions.energy - pattern.conditions.energy
+                    );
+                    relevanceScore += energySimilarity * 0.3;
+                }
+                
+                // 振動の類似性
+                if (typeof pattern.conditions.oscillation === 'number') {
+                    const oscillationSimilarity = 1 - Math.abs(
+                        currentConditions.oscillation - pattern.conditions.oscillation
+                    );
+                    relevanceScore += oscillationSimilarity * 0.2;
+                }
+            }
             
             return Math.max(0, Math.min(1, relevanceScore));
         }
         
         // パターンの適用
         applyPattern(pattern) {
+            // 現在の状態を記録（報酬計算用）
+            this.lastAction = {
+                type: pattern.type,
+                patternId: pattern.creationTime,
+                initialEnergy: this.energy,
+                initialIntegrity: this.tissueIntegrity,
+                wasMerged: this.mergeState.isMerged,
+                timestamp: time
+            };
+            
+            // パターンタイプに基づいて適用
             switch (pattern.type) {
                 case 'vibration':
                     // 振動パターンの適用
@@ -2236,6 +2414,809 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.velocity.x = (this.velocity.x / currentSpeedAfter) * maxSpeed;
                 this.velocity.y = (this.velocity.y / currentSpeedAfter) * maxSpeed;
             }
+        }
+
+        // 記憶の圧縮と重要度ベースの保持
+        compressMemories() {
+            // 記憶容量を超えていない場合は何もしない
+            if (this.memory.adaptivePatterns.length <= this.memory.memoryCapacity) {
+                return;
+            }
+            
+            // 各パターンの重要度を計算
+            for (const pattern of this.memory.adaptivePatterns) {
+                const patternId = pattern.creationTime || Math.random();
+                
+                // 重要度スコアの計算
+                let importanceScore = 0;
+                
+                // 1. 成功率（高いほど重要）
+                importanceScore += (pattern.successRate || 0) * 0.4;
+                
+                // 2. 使用頻度（多いほど重要）
+                importanceScore += Math.min(1, (pattern.usageCount || 0) * 0.05) * 0.3;
+                
+                // 3. 最近使用されたか（最近ほど重要）
+                const recency = pattern.lastUsed ? Math.max(0, 1 - (time - pattern.lastUsed) / 1000) : 0;
+                importanceScore += recency * 0.2;
+                
+                // 4. エネルギー獲得への貢献（高いほど重要）
+                if (pattern.energyDelta && pattern.energyDelta > 0) {
+                    importanceScore += Math.min(1, pattern.energyDelta) * 0.1;
+                }
+                
+                // 重要度スコアを保存
+                this.memory.patternImportance[patternId] = importanceScore;
+            }
+            
+            // 重要度でソート
+            this.memory.adaptivePatterns.sort((a, b) => {
+                const aId = a.creationTime || Math.random();
+                const bId = b.creationTime || Math.random();
+                return (this.memory.patternImportance[bId] || 0) - (this.memory.patternImportance[aId] || 0);
+            });
+            
+            // 容量を超えた分を削除
+            if (this.memory.adaptivePatterns.length > this.memory.memoryCapacity) {
+                this.memory.adaptivePatterns = this.memory.adaptivePatterns.slice(0, this.memory.memoryCapacity);
+            }
+        }
+
+        // 内部動機付けの更新
+        updateMotivations() {
+            // エネルギー状態に基づく動機付けの更新
+            this.motivations.energySeeking = Math.max(0, Math.min(1, 
+                1.2 - this.energy * 1.2  // エネルギーが低いほど高くなる
+            ));
+            
+            // 組織完全性に基づく自己保存の動機
+            this.motivations.selfPreservation = Math.max(0, Math.min(1,
+                1.0 - this.tissueIntegrity + this.cumulativeVibrationStress * 0.2
+            ));
+            
+            // 年齢と環境に基づく探索の動機
+            const ageFactorForExploration = Math.max(0, 1 - this.age / 5000); // 年齢が上がると探索意欲が下がる
+            this.motivations.exploration = Math.max(0, Math.min(1,
+                0.3 + ageFactorForExploration * 0.4 + this.energy * 0.3
+            ));
+            
+            // エネルギーと年齢に基づく繁殖の動機
+            const reproductionAgeFactor = Math.max(0, Math.min(1, this.age / 1000)); // ある程度成熟する必要がある
+            this.motivations.reproduction = Math.max(0, Math.min(1,
+                (this.energy - 0.6) * 2 * reproductionAgeFactor  // エネルギーが高く、ある程度成熟していると繁殖意欲が高まる
+            ));
+            
+            // 社会的相互作用の動機（結合状態や近くのエンティティ数に基づく）
+            const socialFactor = this.mergeState.isMerged ? 0.7 : 0.3;
+            this.motivations.socialInteraction = Math.max(0, Math.min(1,
+                socialFactor + this.energy * 0.3
+            ));
+            
+            // 動機付けに基づいて行動優先度を更新
+            this.updateBehaviorPriorities();
+        }
+        
+        // 行動優先度の更新
+        updateBehaviorPriorities() {
+            // エネルギー収集の優先度
+            this.behaviorPriorities.energyGathering = 
+                this.motivations.energySeeking * 0.7 + 
+                (1 - this.motivations.selfPreservation) * 0.3;
+            
+            // 危険回避の優先度
+            this.behaviorPriorities.avoidance = 
+                this.motivations.selfPreservation * 0.8 + 
+                (1 - this.energy) * 0.2;
+            
+            // 探索の優先度
+            this.behaviorPriorities.exploration = 
+                this.motivations.exploration * 0.6 + 
+                this.energy * 0.4;
+            
+            // 結合の優先度
+            this.behaviorPriorities.merging = 
+                this.motivations.socialInteraction * 0.7 + 
+                (this.energy > 0.5 ? 0.3 : 0);
+            
+            // 分裂の優先度
+            this.behaviorPriorities.division = 
+                this.motivations.reproduction * 0.8 + 
+                (this.energy > 0.8 ? 0.2 : 0);
+        }
+
+        // パターン抽象化と一般化
+        abstractPatterns() {
+            // 十分なパターン数がない場合は何もしない
+            if (this.memory.adaptivePatterns.length < 5) return;
+            
+            // パターンをタイプごとにグループ化
+            const patternsByType = {};
+            
+            for (const pattern of this.memory.adaptivePatterns) {
+                if (!pattern.type) continue;
+                
+                if (!patternsByType[pattern.type]) {
+                    patternsByType[pattern.type] = [];
+                }
+                
+                patternsByType[pattern.type].push(pattern);
+            }
+            
+            // 各タイプごとにクラスタリングと抽象化を実行
+            for (const type in patternsByType) {
+                const patterns = patternsByType[type];
+                
+                // 十分なパターン数があるタイプのみ処理
+                if (patterns.length >= 3) {
+                    const clusters = this.clusterSimilarPatterns(patterns);
+                    
+                    // 各クラスターから抽象パターンを生成
+                    for (const cluster of clusters) {
+                        if (cluster.length >= 2) { // 少なくとも2つのパターンがあるクラスターのみ
+                            const abstractPattern = this.createAbstractPattern(cluster, type);
+                            
+                            // 既存の抽象パターンと類似していないか確認
+                            const isSimilarToExisting = this.memory.abstractPatterns.some(ap => 
+                                ap.type === abstractPattern.type && 
+                                this.calculatePatternSimilarity(ap, abstractPattern) > 0.8
+                            );
+                            
+                            // 類似していなければ追加
+                            if (!isSimilarToExisting) {
+                                this.memory.abstractPatterns.push(abstractPattern);
+                                
+                                // 抽象パターンの数を制限
+                                if (this.memory.abstractPatterns.length > 10) {
+                                    // 最も古い抽象パターンを削除
+                                    this.memory.abstractPatterns.sort((a, b) => a.creationTime - b.creationTime);
+                                    this.memory.abstractPatterns.shift();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 類似したパターンをクラスタリング
+        clusterSimilarPatterns(patterns) {
+            const clusters = [];
+            const processedIndices = new Set();
+            
+            // 各パターンについて
+            for (let i = 0; i < patterns.length; i++) {
+                if (processedIndices.has(i)) continue;
+                
+                const currentPattern = patterns[i];
+                const currentCluster = [currentPattern];
+                processedIndices.add(i);
+                
+                // 他のすべてのパターンと比較
+                for (let j = 0; j < patterns.length; j++) {
+                    if (i === j || processedIndices.has(j)) continue;
+                    
+                    const otherPattern = patterns[j];
+                    const similarity = this.calculatePatternSimilarity(currentPattern, otherPattern);
+                    
+                    // 類似度が閾値を超えるパターンをクラスターに追加
+                    if (similarity > 0.7) {
+                        currentCluster.push(otherPattern);
+                        processedIndices.add(j);
+                    }
+                }
+                
+                // クラスターを追加
+                if (currentCluster.length > 0) {
+                    clusters.push(currentCluster);
+                }
+            }
+            
+            return clusters;
+        }
+        
+        // パターン間の類似度を計算
+        calculatePatternSimilarity(pattern1, pattern2) {
+            // パターンのタイプが異なる場合は類似度0
+            if (pattern1.type !== pattern2.type) return 0;
+            
+            let similarity = 0;
+            let paramCount = 0;
+            
+            // パラメータの類似度を計算
+            if (pattern1.parameters && pattern2.parameters) {
+                const params1 = pattern1.parameters;
+                const params2 = pattern2.parameters;
+                
+                // 共通のパラメータについて類似度を計算
+                for (const key in params1) {
+                    if (typeof params1[key] === 'number' && typeof params2[key] === 'number') {
+                        const paramSimilarity = 1 - Math.min(1, Math.abs(params1[key] - params2[key]));
+                        similarity += paramSimilarity;
+                        paramCount++;
+                    }
+                }
+            }
+            
+            // 条件の類似度を計算（存在する場合）
+            if (pattern1.conditions && pattern2.conditions) {
+                const cond1 = pattern1.conditions;
+                const cond2 = pattern2.conditions;
+                
+                for (const key in cond1) {
+                    if (typeof cond1[key] === 'number' && typeof cond2[key] === 'number') {
+                        const condSimilarity = 1 - Math.min(1, Math.abs(cond1[key] - cond2[key]));
+                        similarity += condSimilarity;
+                        paramCount++;
+                    }
+                }
+            }
+            
+            // 成功率の類似度
+            if (typeof pattern1.successRate === 'number' && typeof pattern2.successRate === 'number') {
+                const successRateSimilarity = 1 - Math.abs(pattern1.successRate - pattern2.successRate);
+                similarity += successRateSimilarity;
+                paramCount++;
+            }
+            
+            // 平均類似度を返す
+            return paramCount > 0 ? similarity / paramCount : 0;
+        }
+        
+        // 抽象パターンを生成
+        createAbstractPattern(patternCluster, type) {
+            // パターンクラスターから共通要素を抽出して抽象パターンを作成
+            const abstractParams = {};
+            const abstractConditions = {};
+            let totalSuccessRate = 0;
+            let totalStrength = 0;
+            
+            // パラメータの平均値を計算
+            for (const pattern of patternCluster) {
+                // パラメータの集計
+                if (pattern.parameters) {
+                    for (const key in pattern.parameters) {
+                        if (typeof pattern.parameters[key] === 'number') {
+                            if (!abstractParams[key]) abstractParams[key] = 0;
+                            abstractParams[key] += pattern.parameters[key] / patternCluster.length;
+                        }
+                    }
+                }
+                
+                // 条件の集計
+                if (pattern.conditions) {
+                    for (const key in pattern.conditions) {
+                        if (typeof pattern.conditions[key] === 'number') {
+                            if (!abstractConditions[key]) abstractConditions[key] = 0;
+                            abstractConditions[key] += pattern.conditions[key] / patternCluster.length;
+                        }
+                    }
+                }
+                
+                // 成功率と強度の集計
+                totalSuccessRate += (pattern.successRate || 0) / patternCluster.length;
+                totalStrength += (pattern.strength || 0.5) / patternCluster.length;
+            }
+            
+            // 抽象パターンの作成
+            return {
+                type: type,
+                parameters: abstractParams,
+                conditions: Object.keys(abstractConditions).length > 0 ? abstractConditions : {
+                    energy: 0.5,
+                    oscillation: 0.5,
+                    stability: 0.5
+                },
+                successRate: totalSuccessRate,
+                strength: totalStrength,
+                isAbstract: true,
+                creationTime: time,
+                sourcePatterns: patternCluster.length,
+                lastUsed: time
+            };
+        }
+
+        // 強化学習メカニズム
+        learnFromExperience(action) {
+            // 行動後の状態変化に基づいて報酬を計算
+            const reward = this.calculateReward(action);
+            
+            // 行動価値の更新
+            const actionKey = JSON.stringify(action);
+            
+            if (!this.memory.actionValues[actionKey]) {
+                this.memory.actionValues[actionKey] = {
+                    value: 0,
+                    count: 0,
+                    lastUpdate: time
+                };
+            }
+            
+            // Q学習に似た更新
+            const record = this.memory.actionValues[actionKey];
+            const oldValue = record.value;
+            
+            // 時間経過による価値の減衰（環境変化への適応を促進）
+            const timeSinceLastUpdate = time - (record.lastUpdate || 0);
+            const decayFactor = Math.max(0.5, Math.exp(-timeSinceLastUpdate / 5000));
+            const decayedValue = oldValue * decayFactor;
+            
+            // 新しい価値の計算
+            record.value = decayedValue + this.learningParams.learningRate * (reward - decayedValue);
+            record.count++;
+            record.lastUpdate = time;
+            
+            // 行動の成功率を更新（対応するパターンがある場合）
+            if (action.patternId) {
+                const pattern = this.findPatternById(action.patternId);
+                if (pattern) {
+                    // 報酬に基づいて成功率を更新
+                    const successUpdate = reward > 0 ? 0.1 : -0.05;
+                    pattern.successRate = Math.max(0, Math.min(1, 
+                        (pattern.successRate || 0.5) + successUpdate
+                    ));
+                }
+            }
+            
+            // 最後の行動をクリア
+            this.lastAction = null;
+        }
+        
+        // 報酬の計算
+        calculateReward(action) {
+            let reward = 0;
+            
+            // 1. エネルギー変化に基づく報酬
+            if (action.initialEnergy !== undefined) {
+                const energyDelta = this.energy - action.initialEnergy;
+                reward += energyDelta * 2; // エネルギー獲得/損失は重要な報酬シグナル
+            }
+            
+            // 2. 衝突回避に基づく報酬
+            if (action.type === 'movement' && this.memory.recentCollisions === 0) {
+                reward += 0.05; // 衝突を避けられたことに対する小さな報酬
+            } else if (action.type === 'movement' && this.memory.recentCollisions > 0) {
+                reward -= 0.1 * this.memory.recentCollisions; // 衝突に対するペナルティ
+            }
+            
+            // 3. 組織完全性の維持に対する報酬
+            if (action.initialIntegrity !== undefined) {
+                const integrityDelta = this.tissueIntegrity - action.initialIntegrity;
+                reward += integrityDelta * 1.5; // 組織完全性の維持/向上に対する報酬
+            }
+            
+            // 4. 結合成功に対する報酬
+            if (action.type === 'merge' && this.mergeState.isMerged && !action.wasMerged) {
+                reward += 0.2; // 結合成功に対する報酬
+            }
+            
+            // 5. 分裂成功に対する報酬
+            if (action.type === 'division' && action.attemptedDivision && action.offspringCount > 0) {
+                reward += 0.3 * action.offspringCount; // 分裂成功に対する報酬
+            }
+            
+            return reward;
+        }
+        
+        // IDによるパターン検索
+        findPatternById(patternId) {
+            // 通常のパターンから検索
+            for (const pattern of this.memory.adaptivePatterns) {
+                if (pattern.creationTime === patternId) {
+                    return pattern;
+                }
+            }
+            
+            // 抽象パターンから検索
+            for (const pattern of this.memory.abstractPatterns) {
+                if (pattern.creationTime === patternId) {
+                    return pattern;
+                }
+            }
+            
+            return null;
+        }
+
+        // メタ学習と自己改善
+        evaluateLearningEfficiency() {
+            // memoryが存在しない場合は初期化
+            if (!this.memory) {
+                this.memory = {
+                    actionValues: {},
+                    adaptivePatterns: []
+                };
+                return; // 初期化したら終了
+            }
+            
+            // actionValuesが存在しない場合は初期化
+            if (!this.memory.actionValues) {
+                this.memory.actionValues = {};
+                return; // 初期化したら終了
+            }
+            
+            // 十分なデータがない場合は何もしない
+            if (Object.keys(this.memory.actionValues).length < 5) return;
+            
+            // 1. 最近の行動価値の変化を分析
+            const recentActions = Object.entries(this.memory.actionValues)
+                .filter(([_, record]) => record && record.lastUpdate && time - record.lastUpdate < 1000)
+                .map(([_, record]) => record);
+                
+            if (recentActions.length < 3) return;
+            
+            // 2. 行動価値の平均と分散を計算
+            const values = recentActions.map(record => record.value);
+            const avgValue = values.reduce((sum, val) => sum + val, 0) / values.length;
+            const variance = values.reduce((sum, val) => sum + Math.pow(val - avgValue, 2), 0) / values.length;
+            
+            // 3. 最近のパターン成功率を分析
+            if (!this.memory.adaptivePatterns) {
+                this.memory.adaptivePatterns = [];
+                return; // 初期化したら終了
+            }
+            
+            const recentPatterns = this.memory.adaptivePatterns
+                .filter(p => p && p.lastUsed && time - p.lastUsed < 1000);
+                
+            const avgSuccessRate = recentPatterns.length > 0 
+                ? recentPatterns.reduce((sum, p) => sum + (p.successRate || 0), 0) / recentPatterns.length
+                : 0;
+                
+            // 4. 現在の学習性能を記録
+            const currentPerformance = {
+                time: time,
+                avgValue: avgValue,
+                variance: variance,
+                avgSuccessRate: avgSuccessRate,
+                energy: this.energy,
+                tissueIntegrity: this.tissueIntegrity
+            };
+            
+            if (!this.learningParams) {
+                this.learningParams = {
+                    learningRate: 0.1,
+                    discountFactor: 0.9,
+                    explorationRate: 0.2,
+                    lastAdjustment: 0,
+                    performanceHistory: []
+                };
+            }
+            
+            if (!this.learningParams.performanceHistory) {
+                this.learningParams.performanceHistory = [];
+            }
+            
+            this.learningParams.performanceHistory.push(currentPerformance);
+            
+            // 履歴サイズを制限
+            if (this.learningParams.performanceHistory.length > 10) {
+                this.learningParams.performanceHistory.shift();
+            }
+            
+            // 5. 十分な履歴データがある場合、学習パラメータを調整
+            if (this.learningParams.performanceHistory.length >= 3) {
+                this.adjustLearningParameters();
+            }
+        }
+        
+        // 学習パラメータの調整
+        adjustLearningParameters() {
+            // learningParamsが存在しない場合は初期化
+            if (!this.learningParams) {
+                this.learningParams = {
+                    learningRate: 0.1,
+                    discountFactor: 0.9,
+                    explorationRate: 0.2,
+                    lastAdjustment: 0,
+                    performanceHistory: []
+                };
+                return; // 初期化したら終了
+            }
+            
+            // performanceHistoryが存在しない場合は初期化
+            if (!this.learningParams.performanceHistory || this.learningParams.performanceHistory.length < 3) {
+                if (!this.learningParams.performanceHistory) {
+                    this.learningParams.performanceHistory = [];
+                }
+                return; // 十分なデータがない場合は終了
+            }
+            
+            const history = this.learningParams.performanceHistory;
+            const current = history[history.length - 1];
+            const previous = history[history.length - 2];
+            
+            // 必要なプロパティが存在するか確認
+            if (!current || !previous || 
+                typeof current.avgValue !== 'number' || 
+                typeof previous.avgValue !== 'number' ||
+                typeof current.variance !== 'number' ||
+                typeof previous.variance !== 'number') {
+                return; // 必要なデータがない場合は終了
+            }
+            
+            // 前回の調整から十分な時間が経過していない場合は調整しない
+            if (!this.learningParams.lastAdjustment) {
+                this.learningParams.lastAdjustment = 0;
+            }
+            
+            if (time - this.learningParams.lastAdjustment < 500) return;
+            
+            // 1. 学習率の調整
+            if (current.avgValue < previous.avgValue) {
+                // 性能が低下している場合、学習率を下げる
+                this.learningParams.learningRate *= 0.9;
+            } else if (current.variance > previous.variance * 1.5) {
+                // 分散が大きく増加している場合、学習率を下げる
+                this.learningParams.learningRate *= 0.95;
+            } else if (current.avgValue > previous.avgValue && current.variance <= previous.variance * 1.2) {
+                // 性能が向上し、分散が適切な場合、学習率を少し上げる
+                this.learningParams.learningRate *= 1.05;
+            }
+            
+            // 2. 探索率の調整（avgSuccessRateが存在する場合のみ）
+            if (typeof current.avgSuccessRate === 'number') {
+                if (current.avgSuccessRate < 0.3) {
+                    // 成功率が低い場合、探索を増やす
+                    this.learningParams.explorationRate = Math.min(0.5, this.learningParams.explorationRate * 1.1);
+                } else if (current.avgSuccessRate > 0.7) {
+                    // 成功率が高い場合、探索を減らす
+                    this.learningParams.explorationRate = Math.max(0.05, this.learningParams.explorationRate * 0.9);
+                }
+            }
+            
+            // 3. エネルギー状態に基づく調整（energyが存在する場合のみ）
+            if (typeof current.energy === 'number' && current.energy < 0.3) {
+                // エネルギーが低い場合、より積極的な探索と高い学習率
+                this.learningParams.explorationRate = Math.min(0.6, this.learningParams.explorationRate * 1.2);
+                this.learningParams.learningRate = Math.min(0.2, this.learningParams.learningRate * 1.1);
+            }
+            
+            // 4. 組織完全性に基づく調整（tissueIntegrityが存在する場合のみ）
+            if (typeof current.tissueIntegrity === 'number' && current.tissueIntegrity < 0.5) {
+                // 組織完全性が低い場合、より保守的な探索
+                this.learningParams.explorationRate = Math.max(0.1, this.learningParams.explorationRate * 0.8);
+            }
+            
+            // パラメータの範囲を制限
+            this.learningParams.learningRate = Math.max(0.01, Math.min(0.3, this.learningParams.learningRate));
+            this.learningParams.explorationRate = Math.max(0.05, Math.min(0.6, this.learningParams.explorationRate));
+            
+            // 調整時間を記録
+            this.learningParams.lastAdjustment = time;
+        }
+
+        // センサー情報の処理 - 自己組織化する感度
+        processSensorData(sensorSamples) {
+            if (!sensorSamples || sensorSamples.length === 0) return null;
+            
+            // 現在の内部状態に基づくセンサー感度の調整
+            const energySensitivity = 0.5 + (1 - this.energy) * 0.5; // エネルギーが低いほど敏感に
+            const vibrationSensitivity = 0.3 + this.internalState.oscillation * 0.7; // 振動が強いほど敏感に
+            
+            // 各方向の重要度を計算
+            const directionImportance = sensorSamples.map(sample => {
+                // エネルギー勾配の重要度（エネルギーが低いほど重視）
+                const energyImportance = sample.energyGradient * energySensitivity;
+                
+                // エンティティの存在による重要度
+                let entityImportance = 0;
+                sample.entities.forEach(entity => {
+                    // エネルギー状態に基づく相互作用
+                    const energyDiff = entity.energy - this.energy;
+                    
+                    // エネルギー差に基づく重要度（差が大きいほど影響大）
+                    const energyInteraction = energyDiff * entity.influence * 0.5;
+                    
+                    // 振動の相互作用
+                    const oscillationDiff = entity.oscillation - this.internalState.oscillation;
+                    const oscillationInteraction = oscillationDiff * entity.influence * vibrationSensitivity;
+                    
+                    // 総合的な影響
+                    entityImportance += energyInteraction + oscillationInteraction;
+                });
+                
+                // 振動の影響
+                const vibrationImportance = sample.vibrations * vibrationSensitivity * 0.3;
+                
+                // 総合的な重要度
+                return {
+                    angle: sample.angle,
+                    direction: sample.direction,
+                    importance: energyImportance + entityImportance + vibrationImportance,
+                    components: {
+                        energy: energyImportance,
+                        entity: entityImportance,
+                        vibration: vibrationImportance
+                    }
+                };
+            });
+            
+            // 最も重要な方向を特定
+            const maxImportance = Math.max(...directionImportance.map(d => d.importance));
+            const minImportance = Math.min(...directionImportance.map(d => d.importance));
+            const importanceRange = maxImportance - minImportance;
+            
+            // 正規化された重要度
+            const normalizedImportance = directionImportance.map(d => ({
+                ...d,
+                normalizedImportance: importanceRange > 0 
+                    ? (d.importance - minImportance) / importanceRange 
+                    : 0.5
+            }));
+            
+            return {
+                directionImportance: normalizedImportance,
+                // 重み付き平均方向（ベクトル合成）
+                averageDirection: this.calculateWeightedDirection(normalizedImportance)
+            };
+        }
+
+        // センサー情報に基づく創発的な行動決定
+        respondToSensorData(sensorResult) {
+            if (!sensorResult) return;
+            
+            // 内部状態に基づく行動傾向
+            const energyState = this.energy;
+            const oscillationState = this.internalState.oscillation;
+            const stabilityState = this.internalState.stability;
+            
+            // 行動傾向の計算
+            const tendencies = {
+                // エネルギー探索傾向（エネルギーが低いほど強い）
+                energySeeking: Math.max(0, 1 - energyState * 2),
+                
+                // 振動同調傾向（振動が中程度のとき最大）
+                vibrationSynchronization: 1 - Math.abs(oscillationState - 0.5) * 2,
+                
+                // 安定性維持傾向（安定性が低いほど強い）
+                stabilityMaintenance: Math.max(0, 1 - stabilityState * 1.5)
+            };
+            
+            // 方向ベクトルの計算
+            let directionVector = { x: 0, y: 0 };
+            
+            // エネルギー勾配に基づく方向
+            if (sensorResult.averageDirection) {
+                // エネルギー探索傾向に基づく重み付け
+                directionVector.x += sensorResult.averageDirection.x * tendencies.energySeeking;
+                directionVector.y += sensorResult.averageDirection.y * tendencies.energySeeking;
+            }
+            
+            // 振動同調に基づく方向（振動が類似したエンティティに向かう）
+            const vibrationSimilarEntities = [];
+            sensorResult.directionImportance.forEach(direction => {
+                direction.entities?.forEach(entity => {
+                    // 振動の類似性を計算
+                    const vibrationSimilarity = 1 - Math.abs(entity.oscillation - oscillationState);
+                    if (vibrationSimilarity > 0.7) {
+                        vibrationSimilarEntities.push({
+                            direction: {
+                                x: Math.cos(entity.angle),
+                                y: Math.sin(entity.angle)
+                            },
+                            weight: vibrationSimilarity * entity.influence * tendencies.vibrationSynchronization
+                        });
+                    }
+                });
+            });
+            
+            // 振動同調ベクトルの計算
+            if (vibrationSimilarEntities.length > 0) {
+                const vibrationVector = vibrationSimilarEntities.reduce(
+                    (vec, entity) => {
+                        vec.x += entity.direction.x * entity.weight;
+                        vec.y += entity.direction.y * entity.weight;
+                        return vec;
+                    },
+                    { x: 0, y: 0 }
+                );
+                
+                // 正規化
+                const magnitude = Math.sqrt(vibrationVector.x * vibrationVector.x + vibrationVector.y * vibrationVector.y);
+                if (magnitude > 0) {
+                    vibrationVector.x /= magnitude;
+                    vibrationVector.y /= magnitude;
+                    
+                    // 方向ベクトルに加算
+                    directionVector.x += vibrationVector.x * tendencies.vibrationSynchronization;
+                    directionVector.y += vibrationVector.y * tendencies.vibrationSynchronization;
+                }
+            }
+            
+            // 安定性維持のための行動（高エネルギー時は分散、低安定性時は静止）
+            if (energyState > 0.8 && stabilityState < 0.5) {
+                // 高エネルギー・低安定性時は他のエンティティから離れる
+                const avoidanceVector = { x: 0, y: 0 };
+                let totalWeight = 0;
+                
+                sensorResult.directionImportance.forEach(direction => {
+                    direction.entities?.forEach(entity => {
+                        if (entity.distance < 50) { // 近くのエンティティのみ考慮
+                            const weight = (1 / (entity.distance + 1)) * tendencies.stabilityMaintenance;
+                            avoidanceVector.x -= Math.cos(entity.angle) * weight;
+                            avoidanceVector.y -= Math.sin(entity.angle) * weight;
+                            totalWeight += weight;
+                        }
+                    });
+                });
+                
+                // 正規化
+                if (totalWeight > 0) {
+                    avoidanceVector.x /= totalWeight;
+                    avoidanceVector.y /= totalWeight;
+                    
+                    // 方向ベクトルに加算
+                    directionVector.x += avoidanceVector.x * tendencies.stabilityMaintenance;
+                    directionVector.y += avoidanceVector.y * tendencies.stabilityMaintenance;
+                }
+            }
+            
+            // 最終的な方向ベクトルの正規化
+            const magnitude = Math.sqrt(directionVector.x * directionVector.x + directionVector.y * directionVector.y);
+            if (magnitude > 0) {
+                directionVector.x /= magnitude;
+                directionVector.y /= magnitude;
+            }
+            
+            // 速度の更新（慣性を考慮）
+            const inertia = 0.8; // 慣性係数
+            const baseSpeed = 0.1 + (energyState * 0.1); // 基本速度
+            
+            this.velocity.x = this.velocity.x * inertia + directionVector.x * baseSpeed * (1 - inertia);
+            this.velocity.y = this.velocity.y * inertia + directionVector.y * baseSpeed * (1 - inertia);
+            
+            // 振動状態の更新
+            this.updateOscillationState(sensorResult);
+        }
+
+        // 振動状態の更新
+        updateOscillationState(sensorResult) {
+            // 周囲の振動の影響を計算
+            let surroundingVibrationInfluence = 0;
+            let totalInfluence = 0;
+            
+            sensorResult.directionImportance.forEach(direction => {
+                direction.entities?.forEach(entity => {
+                    // 距離に基づく影響度
+                    const influence = entity.influence;
+                    surroundingVibrationInfluence += entity.oscillation * influence;
+                    totalInfluence += influence;
+                });
+            });
+            
+            // 周囲の振動の平均
+            const averageSurroundingVibration = totalInfluence > 0 
+                ? surroundingVibrationInfluence / totalInfluence 
+                : this.internalState.oscillation;
+            
+            // 自身の振動と周囲の振動の差
+            const vibrationDifference = averageSurroundingVibration - this.internalState.oscillation;
+            
+            // 振動の調整（同調と分化のバランス）
+            if (Math.abs(vibrationDifference) > 0.1) {
+                // エネルギー状態に基づく同調傾向
+                const synchronizationTendency = this.energy > 0.5 ? 0.7 : 0.3;
+                
+                // 同調（周囲の振動に近づく）
+                this.internalState.oscillation += vibrationDifference * 0.05 * synchronizationTendency;
+            } else {
+                // 微小な差の場合は完全同調の傾向
+                this.internalState.oscillation += vibrationDifference * 0.1;
+            }
+            
+            // 内部状態に基づく自発的な振動変化
+            const spontaneousChange = (Math.random() - 0.5) * 0.02 * (1 - this.internalState.stability);
+            this.internalState.oscillation += spontaneousChange;
+            
+            // 振動の範囲を制限
+            this.internalState.oscillation = Math.max(0, Math.min(1, this.internalState.oscillation));
+            
+            // 振動が安定性に与える影響
+            const oscillationStress = Math.pow(this.internalState.oscillation, 2) * 0.01;
+            this.internalState.stability = Math.max(0, Math.min(1, this.internalState.stability - oscillationStress));
+            
+            // 安定性の自然回復
+            const stabilityRecovery = 0.001 * (1 - this.internalState.oscillation);
+            this.internalState.stability += stabilityRecovery;
         }
     }
     
